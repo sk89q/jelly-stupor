@@ -10,12 +10,13 @@
 #define EQ_RESET_PIN 8
 #define BUTTON_PIN 5
 
-#define INITIAL_BRIGHTNESS 20
+#define INITIAL_BRIGHTNESS 50
 #define UPDATES_PER_SECOND 200
 
 #include <FastLED.h>
 
 CRGB leds[NUM_LEDS];
+uint16_t patternStartTime = 0;
 uint8_t programIndex = 0;
 uint16_t spectrumValue[7];
 uint16_t buttonDownTime = 0;
@@ -23,7 +24,25 @@ double impulse;
 double envelopeUpper = 0;
 double envelopeLower = 0;
 
-typedef bool (*ProgramFunction)(uint16_t a, uint8_t brightness);
+typedef bool (*ProgramFunction)(uint16_t a, uint16_t elapsed, uint8_t brightness);
+
+void setLEDsFromPalette(CRGBPalette16 palette, uint8_t brightness, uint8_t index, uint8_t offset, TBlendType blending)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = ColorFromPalette(palette, index, brightness, blending);
+    index += offset;
+  }
+}
+
+void setLEDsFromPalette32(CRGBPalette32 palette, uint8_t brightness, uint8_t index, uint8_t offset, TBlendType blending)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = ColorFromPalette(palette, index, brightness, blending);
+    index += offset;
+  }
+}
 
 bool fftResponse(uint16_t index, uint8_t brightness)
 {
@@ -51,40 +70,62 @@ bool fftResponse(uint16_t index, uint8_t brightness)
   return false;
 }
 
-bool rainbow(uint16_t index, uint8_t brightness)
+bool rainbow(uint16_t index, uint16_t elapsed, uint8_t brightness)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
     leds[i] = ColorFromPalette(RainbowColors_p, index * 2, brightness, LINEARBLEND);
   }
 
-  return false; //index / UPDATES_PER_SECOND > 5;
+  return elapsed > 60000;
 }
 
-bool rainbowCircle(uint16_t index, uint8_t brightness)
+bool rainbowSlow(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = ColorFromPalette(RainbowColors_p, index / 2, brightness, LINEARBLEND);
+  }
+
+  return elapsed > 60000;
+}
+
+bool rainbowCircle(uint16_t index, uint16_t elapsed, uint8_t brightness)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
     uint8_t k = (i % 40) * 6.4;
-    leds[i] = ColorFromPalette(RainbowColors_p, index + k * 20, brightness, LINEARBLEND);
+    leds[i] = ColorFromPalette(RainbowColors_p, index + k, brightness, LINEARBLEND);
   }
 
-  return false; //index / UPDATES_PER_SECOND > 5;
+  return elapsed > 30000;
 }
 
-bool flash(uint16_t index, uint8_t brightness)
+bool blueYellow(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  CRGBPalette32 palette = CRGBPalette32(CRGB::Blue, CRGB::Yellow);
+
+  setLEDsFromPalette32(palette, brightness, index * 2, 10, LINEARBLEND);
+
+  return elapsed > 30000;
+}
+
+bool plainColor(uint16_t index, uint16_t elapsed, uint8_t brightness)
 {
   for (int i = 0; i < NUM_LEDS; i++)
   {
-    leds[i] = brightness > 20 ? CRGB::White : CRGB::Black;
+    leds[i] = (CRGB) CHSV(200, 255, brightness);
   }
 
-  return false; //index / UPDATES_PER_SECOND > 5;
+  return elapsed > 30000;
 }
 
 ProgramFunction programs[] = {
+    rainbowSlow,
+    plainColor,
+    blueYellow,
     rainbowCircle,
-    flash,
+    rainbow,
 };
 
 void setup()
@@ -136,15 +177,15 @@ void loop()
     {
       buttonDownTime = now;
     }
-    else if (now - buttonDownTime > 5000)
+    else if (now - buttonDownTime > 3500)
     {
       setBrightnessLevel(255);
     }
-    else if (now - buttonDownTime > 4000)
+    else if (now - buttonDownTime > 3000)
     {
       setBrightnessLevel(180);
     }
-    else if (now - buttonDownTime > 3000)
+    else if (now - buttonDownTime > 2500)
     {
       setBrightnessLevel(100);
     }
@@ -158,7 +199,7 @@ void loop()
     }
     else if (now - buttonDownTime > 1000)
     {
-      setBrightnessLevel(INITIAL_BRIGHTNESS);
+      setBrightnessLevel(20);
     }
     else if (now - buttonDownTime > 30)
     {
@@ -204,10 +245,10 @@ void loop()
 
     static uint16_t startIndex = 0;
 
-    bool advance = programs[programIndex](startIndex, brightness);
+    bool advance = programs[programIndex](startIndex, now - patternStartTime, brightness);
     startIndex = startIndex + 1;
 
-    if (buttonDownTime > 0 && now - buttonDownTime > 30)
+    if (buttonDownTime > 0 && now - buttonDownTime > 30 && now - buttonDownTime < 1000)
     {
       advance = true;
     }
@@ -215,15 +256,8 @@ void loop()
     if (advance)
     {
       startIndex = 0;
-
-      if (programIndex + 1 >= sizeof(programs) / sizeof(*programs))
-      {
-        programIndex = 0;
-      }
-      else
-      {
-        programIndex++;
-      }
+      patternStartTime = now;
+      programIndex = random16(sizeof(programs) / sizeof(*programs));
     }
 
     buttonDownTime = 0;
