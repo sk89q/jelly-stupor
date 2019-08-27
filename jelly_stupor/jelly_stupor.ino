@@ -1,6 +1,6 @@
 #define MATRIX_WIDTH 32
 #define MATRIX_HEIGHT 8
-#define NUM_LEDS 40
+#define NUM_LEDS 96
 #define LED_TYPE WS2811
 #define COLOR_ORDER GRB
 
@@ -10,11 +10,21 @@
 #define EQ_RESET_PIN 8
 #define BUTTON_PIN 5
 
+#define CONFIG_OFFSET 0
 #define INITIAL_BRIGHTNESS 50
 #define UPDATES_PER_SECOND 200
 
 #include <FastLED.h>
+#include <EEPROM.h>
 
+struct Config
+{
+  byte brightness;
+  byte programIndex;
+  boolean fullBrightness;
+};
+
+Config config;
 CRGB leds[NUM_LEDS];
 uint16_t patternStartTime = 0;
 uint8_t programIndex = 0;
@@ -23,24 +33,27 @@ uint16_t buttonDownTime = 0;
 double impulse;
 double envelopeUpper = 0;
 double envelopeLower = 0;
+boolean brightnessChanged = false;
 
 typedef bool (*ProgramFunction)(uint16_t a, uint16_t elapsed, uint8_t brightness);
 
 void setLEDsFromPalette(CRGBPalette16 palette, uint8_t brightness, uint8_t index, uint8_t offset, TBlendType blending)
 {
+  int half = NUM_LEDS / 2;
   for (int i = 0; i < NUM_LEDS; i++)
   {
-    leds[i] = ColorFromPalette(palette, index, brightness, blending);
-    index += offset;
+    int k = i < half ? i : half - (i - half);
+    leds[i] = ColorFromPalette(palette, index + k * offset, brightness, blending);
   }
 }
 
 void setLEDsFromPalette32(CRGBPalette32 palette, uint8_t brightness, uint8_t index, uint8_t offset, TBlendType blending)
 {
+  int half = NUM_LEDS / 2;
   for (int i = 0; i < NUM_LEDS; i++)
   {
-    leds[i] = ColorFromPalette(palette, index, brightness, blending);
-    index += offset;
+    int k = i < half ? i : half - (i - half);
+    leds[i] = ColorFromPalette(palette, index + k * offset, brightness, blending);
   }
 }
 
@@ -120,8 +133,55 @@ bool plainColor(uint16_t index, uint16_t elapsed, uint8_t brightness)
   return elapsed > 30000;
 }
 
+bool roTatingPurple(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  CRGBPalette32 palette = CRGBPalette32(CRGB::Purple, CRGB::Black, CRGB::Black);
+
+  setLEDsFromPalette32(palette, brightness, index * 2, 10, NOBLEND);
+
+  return elapsed > 30000;
+}
+
+bool blueNoise(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    uint8_t k = inoise8(random16());
+    leds[i] = (CRGB)CHSV(160, 255, k > 170 ? brightness : 0);
+  }
+
+  return elapsed > 30000;
+}
+
+bool cyclicalBars(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  int half = NUM_LEDS / 2;
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    int k = i < half ? i : half - (i - half);
+    leds[i] = (CRGB)CHSV(70, 255, (k / 5 + (index / (UPDATES_PER_SECOND / 5))) % 3 == 0 ? brightness : 0);
+  }
+
+  return elapsed > 30000;
+}
+
+bool cyclicalBars2(uint16_t index, uint16_t elapsed, uint8_t brightness)
+{
+  int half = NUM_LEDS / 2;
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    int k = i < half ? i : half - (i - half);
+    leds[i] = (CRGB)CHSV(30, 255, (k / 16 + (index / (UPDATES_PER_SECOND / 5))) % 3 == 0 ? brightness : 0);
+  }
+
+  return elapsed > 30000;
+}
+
 ProgramFunction programs[] = {
-    rainbowSlow,
+    cyclicalBars2,
+    cyclicalBars,
+    blueNoise,
+    roTatingPurple,
     plainColor,
     blueYellow,
     rainbowCircle,
@@ -130,6 +190,8 @@ ProgramFunction programs[] = {
 
 void setup()
 {
+  EEPROM.get(CONFIG_OFFSET, config);
+
   pinMode(EQ_ADC_PIN, INPUT);
   pinMode(EQ_STROBE_PIN, OUTPUT);
   pinMode(EQ_RESET_PIN, OUTPUT);
@@ -140,11 +202,17 @@ void setup()
   digitalWrite(EQ_STROBE_PIN, HIGH);
 
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
-  FastLED.setBrightness(INITIAL_BRIGHTNESS);
+  FastLED.setBrightness(config.brightness);
 
   for (int i = 0; i < NUM_LEDS; i++)
   {
     leds[i] = CRGB::Black;
+  }
+
+  programIndex = config.programIndex;
+  if (programIndex >= sizeof(programs) / sizeof(*programs)) 
+  {
+    programIndex = 0;
   }
 
   FastLED.show();
@@ -153,6 +221,8 @@ void setup()
 void setBrightnessLevel(uint8_t brightness)
 {
   FastLED.setBrightness(brightness);
+  config.brightness = brightness;
+  EEPROM.put(CONFIG_OFFSET, config);
 
   for (int i = 0; i < NUM_LEDS; i++)
   {
@@ -176,30 +246,59 @@ void loop()
     if (buttonDownTime == 0)
     {
       buttonDownTime = now;
+      brightnessChanged = false;
     }
-    else if (now - buttonDownTime > 3500)
+    else if (now - buttonDownTime > 4500)
     {
       setBrightnessLevel(255);
     }
-    else if (now - buttonDownTime > 3000)
+    else if (now - buttonDownTime > 4000)
     {
       setBrightnessLevel(180);
     }
-    else if (now - buttonDownTime > 2500)
+    else if (now - buttonDownTime > 3500)
     {
       setBrightnessLevel(100);
     }
-    else if (now - buttonDownTime > 2000)
+    else if (now - buttonDownTime > 3000)
     {
       setBrightnessLevel(80);
     }
-    else if (now - buttonDownTime > 1500)
+    else if (now - buttonDownTime > 2500)
     {
       setBrightnessLevel(50);
     }
-    else if (now - buttonDownTime > 1000)
+    else if (now - buttonDownTime > 2000)
     {
       setBrightnessLevel(20);
+    }
+    else if (now - buttonDownTime > 1500)
+    {
+      for (int i = 0; i < NUM_LEDS; i++)
+      {
+        if (i < 5)
+        {
+          leds[i] = CRGB::Purple;
+        }
+        else
+        {
+          leds[i] = CRGB::Black;
+        }
+      }
+    }
+    else if (now - buttonDownTime > 1000)
+    {
+      for (int i = 0; i < NUM_LEDS; i++)
+      {
+        if (i < 5)
+        {
+          leds[i] = CRGB::Green;
+        }
+        else
+        {
+          leds[i] = CRGB::Black;
+        }
+      }
     }
     else if (now - buttonDownTime > 30)
     {
@@ -241,23 +340,42 @@ void loop()
 
     double lower = envelopeLower > 100 ? 100 : envelopeLower;
     double k = (envelopeUpper - lower > 50 ? (impulse - lower) / (envelopeUpper - lower) : 0);
-    uint8_t brightness = constrain(50.49752469 * pow(k, 8.930413727e-1), 1, 255);
+    uint8_t brightness = config.fullBrightness ? 255 : constrain(50.49752469 * pow(k, 8.930413727e-1), 1, 255);
 
     static uint16_t startIndex = 0;
 
-    bool advance = programs[programIndex](startIndex, now - patternStartTime, brightness);
+    programs[programIndex](startIndex, now - patternStartTime, brightness);
     startIndex = startIndex + 1;
+    bool advance = false;
 
-    if (buttonDownTime > 0 && now - buttonDownTime > 30 && now - buttonDownTime < 1000)
+    if (buttonDownTime > 0 && now - buttonDownTime > 30 && now - buttonDownTime <= 1000)
     {
       advance = true;
+    }
+
+    if (buttonDownTime > 0 && now - buttonDownTime > 1000 && now - buttonDownTime <= 1500)
+    {
+      config.fullBrightness = false;
+      EEPROM.put(CONFIG_OFFSET, config);
+    }
+
+    if (buttonDownTime > 0 && now - buttonDownTime > 1500 && now - buttonDownTime <= 2000)
+    {
+      config.fullBrightness = true;
+      EEPROM.put(CONFIG_OFFSET, config);
     }
 
     if (advance)
     {
       startIndex = 0;
       patternStartTime = now;
-      programIndex = random16(sizeof(programs) / sizeof(*programs));
+      programIndex++;
+      if (programIndex >= sizeof(programs) / sizeof(*programs))
+      {
+        programIndex = 0;
+      }
+      config.programIndex = programIndex;
+      EEPROM.put(CONFIG_OFFSET, config);
     }
 
     buttonDownTime = 0;
